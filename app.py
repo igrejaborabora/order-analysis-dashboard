@@ -6,9 +6,7 @@ import time
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from threading import Thread
+import streamlit as st
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -18,17 +16,6 @@ from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 import traceback
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('orders_analysis.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
 # Load environment variables
 load_dotenv()
 
@@ -37,17 +24,17 @@ access_token = os.getenv('SHOPIFY_ACCESS_TOKEN')
 storefront_token = os.getenv('SHOPIFY_STOREFRONT_TOKEN')
 
 if not store_name or not access_token:
-    messagebox.showerror("Error", "Missing SHOPIFY_STORE_NAME or SHOPIFY_ACCESS_TOKEN environment variables.")
+    st.error("Missing SHOPIFY_STORE_NAME or SHOPIFY_ACCESS_TOKEN environment variables.")
     raise SystemExit("Missing necessary environment variables.")
 
 if not storefront_token:
-    logger.warning("SHOPIFY_STOREFRONT_TOKEN not found. International pricing might be limited.")
+    logging.warning("SHOPIFY_STOREFRONT_TOKEN not found. International pricing might be limited.")
 
 flores_location_id = os.getenv('LOCATION_ID_FLORES')
 warehouse_location_id = os.getenv('LOCATION_ID_WAREHOUSE')
 
 if not flores_location_id or not warehouse_location_id:
-    messagebox.showerror("Error", "Missing location environment variables.")
+    st.error("Missing location environment variables.")
     raise SystemExit("Missing location environment variables.")
 
 location_ids = {
@@ -79,7 +66,7 @@ def fetch_cost_for_inventory_item(inventory_item_id: str) -> float:
         response = requests.get(cost_url, headers=headers)
         
         if response.status_code == 429:
-            logger.warning("Rate limit exceeded. Retrying in 1 second...")
+            logging.warning("Rate limit exceeded. Retrying in 1 second...")
             time.sleep(1)
             continue
         
@@ -139,12 +126,12 @@ def execute_graphql_query(query: str, variables: Optional[Dict] = None) -> Dict[
     
     if 'errors' in result:
         error_message = '; '.join([error.get('message', 'Unknown error') for error in result['errors']])
-        logger.error(f"GraphQL query returned errors: {error_message}")
+        logging.error(f"GraphQL query returned errors: {error_message}")
         raise Exception(f"GraphQL errors: {error_message}")
         
     if 'data' not in result:
-        logger.error("GraphQL response missing 'data' field")
-        logger.error(f"Full response: {result}")
+        logging.error("GraphQL response missing 'data' field")
+        logging.error(f"Full response: {result}")
         raise Exception("Invalid GraphQL response: missing 'data' field")
         
     return result
@@ -226,12 +213,18 @@ query {
 }
 """
 
-def fetch_unfulfilled_orders_with_progress(gui_app) -> List[Dict]:
+def fetch_unfulfilled_orders_with_progress(progress_bar=None) -> List[Dict]:
     all_orders = []
+    
+    # Create a progress bar if not provided
+    if progress_bar is None:
+        progress_bar = st.progress(0, "Fetching orders...")
+    
+    # Get initial count
     result = execute_graphql_query(count_query)
     if not result or 'data' not in result or 'orders' not in result['data']:
         error_msg = "Invalid response structure from GraphQL API"
-        logger.error(f"{error_msg}. Response: {result}")
+        logging.error(f"{error_msg}. Response: {result}")
         raise Exception(error_msg)
     
     initial_orders = result['data']['orders']['edges']
@@ -239,6 +232,7 @@ def fetch_unfulfilled_orders_with_progress(gui_app) -> List[Dict]:
     has_more = result['data']['orders']['pageInfo']['hasNextPage']
     next_cursor = result['data']['orders']['pageInfo']['endCursor']
     
+    # Count total orders
     while has_more:
         count_with_cursor = f"""
         query {{
@@ -263,13 +257,11 @@ def fetch_unfulfilled_orders_with_progress(gui_app) -> List[Dict]:
         has_more = result['data']['orders']['pageInfo']['hasNextPage']
         next_cursor = result['data']['orders']['pageInfo']['endCursor']
     
-    gui_app.total_orders = total_count
-    gui_app.order_count_value.config(text=f"0/{gui_app.total_orders}")
-    
+    # Fetch actual orders
     cursor = None
     while True:
         variables = {"cursor": cursor} if cursor else {}
-        logger.info(f"Fetching orders with cursor: {cursor}")
+        logging.info(f"Fetching orders with cursor: {cursor}")
         result = execute_graphql_query(orders_query, variables)
         
         if not result or 'data' not in result or 'orders' not in result['data']:
@@ -281,12 +273,9 @@ def fetch_unfulfilled_orders_with_progress(gui_app) -> List[Dict]:
         
         all_orders.extend(orders_data['edges'])
         
-        gui_app.processed_orders = len(all_orders)
-        gui_app.order_count_value.config(text=f"{gui_app.processed_orders}/{gui_app.total_orders}")
-        progress = (len(all_orders) / total_count * 100) if total_count > 0 else 0
-        gui_app.fetch_progress_var.set(progress)
-        gui_app.fetch_progress_label.config(text=f"{int(progress)}%")
-        gui_app.root.update_idletasks()
+        # Update progress
+        progress = (len(all_orders) / total_count) if total_count > 0 else 0
+        progress_bar.progress(progress, f"Fetched {len(all_orders)}/{total_count} orders")
         
         if not orders_data['pageInfo']['hasNextPage']:
             break
@@ -386,14 +375,12 @@ def save_excel_file(file_path: str, df_group1: pd.DataFrame, df_group2: pd.DataF
         apply_excel_formatting(workbook)
         writer.close()
         
-        logger.info(f"Excel file saved successfully: {file_path}")
-        messagebox.showinfo("Success", "Analysis report saved successfully!")
-        os.startfile(os.path.abspath(file_path))
+        logging.info(f"Excel file saved successfully: {file_path}")
+        st.success("Analysis report saved successfully!")
     except Exception as e:
         err_trace = traceback.format_exc()
-        logger.error(f"Error saving Excel file: {str(e)}\n{err_trace}")
-        messagebox.showerror("Error", f"An error occurred while saving the file: {str(e)}")
-        raise
+        logging.error(f"Error saving Excel file: {str(e)}\n{err_trace}")
+        st.error(f"An error occurred while saving the file: {str(e)}")
 
 def determine_zone(country: str) -> str:
     country = country.strip().lower()
@@ -423,7 +410,6 @@ def get_azul_cost(total_weight_kg: float, zone: str) -> float:
             return costs.get(zone, costs["RestWorld"])
     last = intervals[-1][1]
     return last.get(zone, last["RestWorld"])
-
 
 def get_variant_data(session, variant_id):
     url = f"https://{store_name}.myshopify.com/admin/api/2023-01/variants/{variant_id}.json"
@@ -457,7 +443,7 @@ def process_orders(orders: List[Dict]) -> List[Dict]:
         
         for order_edge in batch_orders:
             order = order_edge['node']
-            logger.info(f"Processing Order: {order['name']}")
+            logging.info(f"Processing Order: {order['name']}")
 
             country = order['shippingAddress']['country'] if order.get('shippingAddress') else ''
             zone = determine_zone(country)
@@ -672,370 +658,57 @@ def split_data_by_group(processed_data: List[Dict]) -> Tuple[pd.DataFrame, pd.Da
     
     return df_group1, df_group2, df_group3
 
-def setup_treeview_style():
-    style = ttk.Style()
-    style.theme_use("clam")
-
-    style.configure("MyTreeview.Heading",
-                    background="#CCCCCC",
-                    foreground="black",
-                    font=('Arial', 10, 'bold'))
-
-    style.configure("MyTreeview",
-                    background="white",
-                    foreground="black",
-                    font=('Arial', 10),
-                    rowheight=25,
-                    fieldbackground="white")
-
-    style.layout("MyTreeview", style.layout("Treeview"))
-    return style
-
-def configure_columns(tree: ttk.Treeview):
-    columns = [
-        "Order Number","Order Date","Country","Currency Code","SKU","EAN","Product","Total Value","Quantity","Vendor",
-        "Stock_Status","Stock_Flores","Stock_Warehouse","Cost_Per_Item","Unit_Price","Compare_Price","Price_Diff",
-        "Margin_Percent","Transport_Cost","Total_Weight","Real_Transport_Cost","Real_Profit","group"
-    ]
-    tree["columns"] = columns
-    tree["show"] = "headings"
-    
-    col_config = {
-        "Order Number": (110, 'center'),
-        "Order Date": (180, 'center'),
-        "Country": (100, 'center'),
-        "Currency Code": (100, 'center'),
-        "SKU": (120, 'center'),
-        "EAN": (100, 'center'),
-        "Product": (300, 'w'),
-        "Total Value": (80, 'center'),
-        "Quantity": (70, 'center'),
-        "Vendor": (100, 'center'),
-        "Stock_Status": (100, 'center'),
-        "Stock_Flores": (100, 'center'),
-        "Stock_Warehouse": (120, 'center'),
-        "Cost_Per_Item": (90, 'center'),
-        "Unit_Price": (80, 'center'),
-        "Compare_Price": (90, 'center'),
-        "Price_Diff": (90, 'center'),
-        "Margin_Percent": (90, 'center'),
-        "Transport_Cost": (90, 'center'),
-        "Total_Weight": (90, 'center'),
-        "Real_Transport_Cost": (90, 'center'),
-        "Real_Profit": (90, 'center'),
-        "group": (50, 'center')
-    }
-
-    for col in columns:
-        width, align = col_config[col]
-        anchor = tk.W if align == 'w' else tk.CENTER
-        tree.heading(col, text=col, anchor=tk.CENTER)
-        tree.column(col, width=width, anchor=anchor)
-
-class CTTCostsViewer:
-    # ... original CTT costs viewer code ...
-    # Not focusing on changes here since layout request was about main GUI
-    def __init__(self, parent):
-        pass
-
-class OrderAnalysisGUI:
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title("Order Analysis")
-        self.root.geometry("1300x900")
-        
-        self.order_data = []
-        self.total_orders = 0
-        self.processed_orders = 0
-        
-        self.start_time = 0
-        self.is_running = False
-        self.processed_data = []
-        self.group_data = None
-
-        self.style = setup_treeview_style()
-
-        self.main_frame = ttk.Frame(self.root, padding=20)
-        self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        self.create_timer_and_count_widgets()
-        self.create_table()
-        self.create_bottom_section()
-        self.create_button_frame()
-
-        self.main_frame.columnconfigure(0, weight=1)
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-
-    def create_timer_and_count_widgets(self):
-        self.timer_frame = ttk.Frame(self.main_frame, padding=10)
-        self.timer_frame.grid(row=0, column=0, sticky=(tk.W, tk.E))
-
-        self.timer_label = ttk.Label(self.timer_frame, text="Time Elapsed:", font=('Arial', 10, 'bold'))
-        self.timer_label.grid(row=0, column=0, padx=30)
-        
-        self.timer_value = ttk.Label(self.timer_frame, text="00:00", font=('Arial', 12))
-        self.timer_value.grid(row=0, column=1, padx=30)
-        
-        self.order_count_label = ttk.Label(self.timer_frame, text="Orders to Process:", font=('Arial', 10, 'bold'))
-        self.order_count_label.grid(row=0, column=2, padx=30)
-        
-        self.order_count_value = ttk.Label(self.timer_frame, text="0/0", font=('Arial', 12))
-        self.order_count_value.grid(row=0, column=3, padx=30)
-
-    def create_table(self):
-        self.table_frame = ttk.Frame(self.main_frame, padding=10)
-        self.table_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        self.tree = ttk.Treeview(self.table_frame, style='MyTreeview', height=16)
-        configure_columns(self.tree)
-        
-        scrollbar = ttk.Scrollbar(self.table_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        
-        self.tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
-        
-        self.table_frame.columnconfigure(0, weight=1)
-
-    def create_bottom_section(self):
-        # Frame that holds progress and stats side by side
-        self.bottom_section = ttk.Frame(self.main_frame, padding=10)
-        self.bottom_section.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Progress frame on the left
-        self.progress_frame = ttk.LabelFrame(self.bottom_section, text="Progress", padding=10)
-        self.progress_frame.grid(row=0, column=0, sticky=(tk.W, tk.N, tk.S), padx=10, pady=10)
-        
-        ttk.Label(self.progress_frame, text="Fetching Orders:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
-        self.fetch_progress_var = tk.DoubleVar()
-        self.fetch_progress = ttk.Progressbar(
-            self.progress_frame, 
-            variable=self.fetch_progress_var,
-            maximum=100,
-            length=150,  # half of original length
-            mode='determinate'
-        )
-        self.fetch_progress.grid(row=0, column=1, padx=5, pady=5)
-        self.fetch_progress_label = ttk.Label(self.progress_frame, text="0%")
-        self.fetch_progress_label.grid(row=0, column=2, padx=5, pady=5)
-        
-        ttk.Label(self.progress_frame, text="Processing Data:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
-        self.compute_progress_var = tk.DoubleVar()
-        self.compute_progress = ttk.Progressbar(
-            self.progress_frame,
-            variable=self.compute_progress_var,
-            maximum=100,
-            length=150, # half of original
-            mode='determinate'
-        )
-        self.compute_progress.grid(row=1, column=1, padx=5, pady=5)
-        self.compute_progress_label = ttk.Label(self.progress_frame, text="0%")
-        self.compute_progress_label.grid(row=1, column=2, padx=5, pady=5)
-
-        # Stats board on the right
-        self.stats_frame = ttk.LabelFrame(self.bottom_section, text="Stats Board", padding=10)
-        self.stats_frame.grid(row=0, column=1, sticky=(tk.E, tk.N, tk.S), padx=10, pady=10)
-
-        self.stats_labels = {
-            'full_orders': ttk.Label(self.stats_frame, text="Full Stock: 0 | €0.00"),
-            'partial_orders': ttk.Label(self.stats_frame, text="Partial Stock: 0 | €0.00"),
-            'no_stock_orders': ttk.Label(self.stats_frame, text="No Stock: 0 | €0.00"),
-            'top_countries': ttk.Label(self.stats_frame, text="Top 5 Countries:\n"),
-            'lateness': ttk.Label(self.stats_frame, text="Lateness:\n>3 days: 0\n>=4 days:0\n>=7 days:0\n>=9 days:0")
-        }
-
-        row_counter = 0
-        self.stats_labels['full_orders'].grid(row=row_counter, column=0, sticky=tk.W, padx=5, pady=5)
-        row_counter += 1
-        self.stats_labels['partial_orders'].grid(row=row_counter, column=0, sticky=tk.W, padx=5, pady=5)
-        row_counter += 1
-        self.stats_labels['no_stock_orders'].grid(row=row_counter, column=0, sticky=tk.W, padx=5, pady=5)
-        row_counter += 1
-        self.stats_labels['top_countries'].grid(row=row_counter, column=0, sticky=tk.W, padx=5, pady=5)
-        row_counter += 1
-        self.stats_labels['lateness'].grid(row=row_counter, column=0, sticky=tk.W, padx=5, pady=5)
-
-        self.bottom_section.columnconfigure(0, weight=1)
-        self.bottom_section.columnconfigure(1, weight=1)
-
-    def create_button_frame(self):
-        self.button_frame = ttk.Frame(self.main_frame, padding=10)
-        self.button_frame.grid(row=3, column=0, sticky=tk.EW)
-
-        self.ctt_costs_button = ttk.Button(self.button_frame, text="CTT Costs", command=self.ctt_costs_action)
-        self.export_button = ttk.Button(self.button_frame, text="Export Excel", command=self.export_to_excel_main)
-        self.start_button = ttk.Button(self.button_frame, text="Start Analysis", command=self.start_analysis)
-
-        self.ctt_costs_button.pack(side='left', padx=10)
-        self.export_button.pack(side='right', padx=10)
-        self.start_button.pack(side='right', padx=10)
-
-    def update_timer(self):
-        if self.is_running:
-            elapsed_time = int(time.time() - self.start_time)
-            minutes = elapsed_time // 60
-            seconds = elapsed_time % 60
-            self.timer_value.config(text=f"{minutes:02d}:{seconds:02d}")
-            self.root.after(1000, self.update_timer)
-
-    def update_table(self, order_data: List[Dict]):
-        try:
-            for item in self.tree.get_children():
-                self.tree.delete(item)
-            
-            for i, row in enumerate(order_data):
-                values = []
-                for col in self.tree["columns"]:
-                    val = row.get(col, "")
-                    values.append("" if val is None else str(val))
-            
-                tag = "oddrow" if i % 2 else "evenrow"
-                self.tree.insert("", "end", values=values, tags=(tag,))
-        
-            self.tree.tag_configure("oddrow", background="#F2D5DB")
-            self.tree.tag_configure("evenrow", background="#FAEAED")
-        
-        except Exception as e:
-            logger.error(f"Error in update_table: {str(e)}")
-            traceback.print_exc()
-
-    def update_stats_board(self, df_group1: pd.DataFrame, df_group2: pd.DataFrame, df_group3: pd.DataFrame):
-        def get_orders_count_and_sum(df):
-            if df.empty:
-                return 0, 0.0
-            unique_orders = df['Order Number'].unique()
-            count_orders = len(unique_orders)
-            total_values = df.groupby('Order Number')['Total Value'].first().sum()
-            return count_orders, total_values
-
-        full_count, full_sum = get_orders_count_and_sum(df_group1)
-        partial_count, partial_sum = get_orders_count_and_sum(df_group2)
-        nostock_count, nostock_sum = get_orders_count_and_sum(df_group3)
-
-        self.stats_labels['full_orders'].config(text=f"Full Stock: {full_count} | €{full_sum:.2f}")
-        self.stats_labels['partial_orders'].config(text=f"Partial Stock: {partial_count} | €{partial_sum:.2f}")
-        self.stats_labels['no_stock_orders'].config(text=f"No Stock: {nostock_count} | €{nostock_sum:.2f}")
-
-        if self.processed_data:
-            df_all = pd.DataFrame(self.processed_data)
-            order_country = df_all.groupby('Order Number')['Country'].first().value_counts()
-            top_countries = order_country.head(5)
-
-            top_text = "Top 5 Countries:\n"
-            for i, (country, cnt) in enumerate(top_countries.items(), start=1):
-                top_text += f"{i}. {country} - {cnt}\n"
-            self.stats_labels['top_countries'].config(text=top_text)
-
-            now = datetime.utcnow()
-            df_orders = df_all.groupby('Order Number')['Order Date'].first().reset_index()
-            df_orders['Order Date'] = pd.to_datetime(df_orders['Order Date'])
-            df_orders['days_old'] = (now - df_orders['Order Date']).dt.days
-
-            more_3 = (df_orders['days_old'] > 3).sum()
-            more_4 = (df_orders['days_old'] >= 4).sum()
-            more_7 = (df_orders['days_old'] >= 7).sum()
-            more_9 = (df_orders['days_old'] >= 9).sum()
-
-            lateness_text = (f"Lateness:\n"
-                             f">3 days: {more_3}\n"
-                             f">=4 days: {more_4}\n"
-                             f">=7 days: {more_7}\n"
-                             f">=9 days: {more_9}")
-            self.stats_labels['lateness'].config(text=lateness_text)
-        else:
-            self.stats_labels['top_countries'].config(text="Top 5 Countries:\nNo data")
-            self.stats_labels['lateness'].config(text="Lateness:\nNo data")
-
-    def run_analysis(self):
-        try:
-            orders = fetch_unfulfilled_orders_with_progress(self)
-            logger.info("Processing orders now...")
-            self.processed_data = self.process_orders_with_progress(orders)
-            
-            df_group1, df_group2, df_group3 = split_data_by_group(self.processed_data)
-            self.group_data = {1: df_group1, 2: df_group2, 3: df_group3}
-
-            self.update_stats_board(df_group1, df_group2, df_group3)
-            
-        except Exception as e:
-            err_trace = traceback.format_exc()
-            logger.error(f"Error during analysis: {str(e)}\n{err_trace}")
-            messagebox.showerror("Error", f"An error occurred during analysis:\n{err_trace}")
-        finally:
-            self.is_running = False
-            self.start_button.config(state='normal')
-
-    def process_orders_with_progress(self, orders: List[Dict]) -> List[Dict]:
-        processed_data = []
-        batch_size = 10
-        total = len(orders)
-        
-        for batch_idx in range(0, total, batch_size):
-            batch_orders = orders[batch_idx:batch_idx+batch_size]
-            try:
-                batch_processed = process_orders(batch_orders)
-            except Exception as e:
-                err_trace = traceback.format_exc()
-                logger.error(f"Error in process_orders_with_progress: {str(e)}\n{err_trace}")
-                messagebox.showerror("Error", f"An error occurred in process_orders_with_progress:\n{err_trace}")
-                break
-            processed_data.extend(batch_processed)
-            
-            progress = ((batch_idx + len(batch_orders)) / total) * 100 if total else 0
-            self.compute_progress_var.set(progress)
-            self.compute_progress_label.config(text=f"{int(progress)}%")
-            self.root.update_idletasks()
-            
-            self.update_table(processed_data[-16:])
-        
-        return processed_data
-
-    def start_analysis(self):
-        self.start_button.config(state='disabled')
-        self.start_time = time.time()
-        self.is_running = True
-        self.update_timer()
-        Thread(target=self.run_analysis, daemon=True).start()
-
-    def export_to_excel_main(self):
-        if not self.processed_data:
-            messagebox.showerror("Error", "No data available to export. Please run the analysis first.")
-            return
-        
-        try:
-            df_group1, df_group2, df_group3 = split_data_by_group(self.processed_data)
-            timestamp_str = datetime.now().strftime('%Y_%m_%d_%M_%S')
-            file_name = f"Cosmetyque_Orders_Grouped_{timestamp_str}.xlsx"
-            file_path = filedialog.asksaveasfilename(
-                defaultextension=".xlsx",
-                filetypes=[("Excel files", "*.xlsx")],
-                title="Save Analysis Report",
-                initialfile=file_name
-            )
-            
-            if file_path:
-                save_excel_file(file_path, df_group1, df_group2, df_group3)
-        except Exception as e:
-            err_trace = traceback.format_exc()
-            logger.error(f"Error in export_to_excel_main: {str(e)}\n{err_trace}")
-            messagebox.showerror("Error", f"An error occurred in export_to_excel_main:\n{err_trace}")
-
-    def ctt_costs_action(self):
-        CTTCostsViewer(self.root)
-
 def main():
-    import socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind(('localhost', 12345))
-        root = tk.Tk()
-        app = OrderAnalysisGUI(root)
-        root.mainloop()
-    except socket.error:
-        messagebox.showwarning("Warning", "Application is already running!")
-    finally:
-        sock.close()
+    st.set_page_config(page_title="Order Analysis", layout="wide")
+    st.title("Order Analysis Dashboard")
+    
+    # Initialize session state
+    if 'processed_data' not in st.session_state:
+        st.session_state.processed_data = []
+    if 'start_time' not in st.session_state:
+        st.session_state.start_time = 0
+    if 'is_running' not in st.session_state:
+        st.session_state.is_running = False
+    
+    # Create columns for layout
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        if st.button("Start Analysis", disabled=st.session_state.is_running):
+            st.session_state.is_running = True
+            st.session_state.start_time = time.time()
+            
+            # Fetch and process orders
+            orders = fetch_unfulfilled_orders_with_progress(None)  # We'll modify this function
+            if orders:
+                processed_data = process_orders(orders)
+                st.session_state.processed_data = processed_data
+                
+                # Split data into groups
+                df_group1, df_group2, df_group3 = split_data_by_group(processed_data)
+                
+                # Display results
+                st.success("Analysis completed!")
+                
+                # Show statistics
+                st.subheader("Statistics")
+                for group_name, df in [("Group 1", df_group1), ("Group 2", df_group2), ("Group 3", df_group3)]:
+                    if not df.empty:
+                        count = len(df)
+                        total = df['Total Value'].sum()
+                        st.metric(f"{group_name}", f"{count} orders", f"€{total:.2f} total")
+                
+                # Add export button
+                if st.button("Export to Excel"):
+                    save_excel_file("order_analysis.xlsx", df_group1, df_group2, df_group3)
+                    st.success("Data exported to Excel!")
+            
+            st.session_state.is_running = False
+    
+    with col2:
+        if st.session_state.start_time > 0:
+            elapsed_time = time.time() - st.session_state.start_time
+            st.info(f"Elapsed Time: {elapsed_time:.2f} seconds")
 
 if __name__ == "__main__":
     main()
