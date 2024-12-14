@@ -23,19 +23,8 @@ store_name = os.getenv('SHOPIFY_STORE_NAME')
 access_token = os.getenv('SHOPIFY_ACCESS_TOKEN')
 storefront_token = os.getenv('SHOPIFY_STOREFRONT_TOKEN')
 
-if not store_name or not access_token:
-    st.error("Missing SHOPIFY_STORE_NAME or SHOPIFY_ACCESS_TOKEN environment variables.")
-    raise SystemExit("Missing necessary environment variables.")
-
-if not storefront_token:
-    logging.warning("SHOPIFY_STOREFRONT_TOKEN not found. International pricing might be limited.")
-
 flores_location_id = os.getenv('LOCATION_ID_FLORES')
 warehouse_location_id = os.getenv('LOCATION_ID_WAREHOUSE')
-
-if not flores_location_id or not warehouse_location_id:
-    st.error("Missing location environment variables.")
-    raise SystemExit("Missing location environment variables.")
 
 location_ids = {
     "Pr. das Flores, 54": flores_location_id,
@@ -662,51 +651,93 @@ def main():
     st.set_page_config(page_title="Order Analysis", layout="wide")
     st.title("Order Analysis Dashboard")
     
-    # Initialize session state
-    if 'processed_data' not in st.session_state:
-        st.session_state.processed_data = []
-    if 'start_time' not in st.session_state:
-        st.session_state.start_time = 0
-    if 'is_running' not in st.session_state:
-        st.session_state.is_running = False
+    # Check environment variables
+    store_name = os.getenv('SHOPIFY_STORE_NAME')
+    access_token = os.getenv('SHOPIFY_ACCESS_TOKEN')
+    storefront_token = os.getenv('SHOPIFY_STOREFRONT_TOKEN')
+    flores_location_id = os.getenv('LOCATION_ID_FLORES')
+    warehouse_location_id = os.getenv('LOCATION_ID_WAREHOUSE')
+    
+    # Check required variables
+    missing_vars = []
+    if not store_name:
+        missing_vars.append('SHOPIFY_STORE_NAME')
+    if not access_token:
+        missing_vars.append('SHOPIFY_ACCESS_TOKEN')
+    if not flores_location_id:
+        missing_vars.append('LOCATION_ID_FLORES')
+    if not warehouse_location_id:
+        missing_vars.append('LOCATION_ID_WAREHOUSE')
+    
+    if missing_vars:
+        st.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        st.info("""
+        Please set up the following environment variables in Streamlit Cloud:
+        1. SHOPIFY_STORE_NAME - Your Shopify store subdomain
+        2. SHOPIFY_ACCESS_TOKEN - Your Shopify Admin API access token
+        3. LOCATION_ID_FLORES - Location ID for Pr. das Flores
+        4. LOCATION_ID_WAREHOUSE - Location ID for Warehouse
+        
+        To set these variables:
+        1. Go to your app settings in Streamlit Cloud
+        2. Find the 'Secrets' section
+        3. Add the variables in this format:
+        ```
+        SHOPIFY_STORE_NAME = "your-store-name"
+        SHOPIFY_ACCESS_TOKEN = "your-access-token"
+        LOCATION_ID_FLORES = "your-flores-location-id"
+        LOCATION_ID_WAREHOUSE = "your-warehouse-location-id"
+        ```
+        """)
+        return
+    
+    # Optional warning for storefront token
+    if not storefront_token:
+        st.warning("SHOPIFY_STOREFRONT_TOKEN not found. International pricing might be limited.")
+    
+    location_ids = {
+        "Pr. das Flores, 54": flores_location_id,
+        "Warehouse": warehouse_location_id
+    }
     
     # Create columns for layout
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        if st.button("Start Analysis", disabled=st.session_state.is_running):
+        if st.button("Start Analysis", disabled=st.session_state.get('is_running', False)):
             st.session_state.is_running = True
             st.session_state.start_time = time.time()
             
             # Fetch and process orders
-            orders = fetch_unfulfilled_orders_with_progress(None)  # We'll modify this function
-            if orders:
-                processed_data = process_orders(orders)
-                st.session_state.processed_data = processed_data
-                
-                # Split data into groups
-                df_group1, df_group2, df_group3 = split_data_by_group(processed_data)
-                
-                # Display results
-                st.success("Analysis completed!")
-                
-                # Show statistics
-                st.subheader("Statistics")
-                for group_name, df in [("Group 1", df_group1), ("Group 2", df_group2), ("Group 3", df_group3)]:
-                    if not df.empty:
-                        count = len(df)
-                        total = df['Total Value'].sum()
-                        st.metric(f"{group_name}", f"{count} orders", f"€{total:.2f} total")
-                
-                # Add export button
-                if st.button("Export to Excel"):
-                    save_excel_file("order_analysis.xlsx", df_group1, df_group2, df_group3)
-                    st.success("Data exported to Excel!")
+            with st.spinner("Fetching orders..."):
+                orders = fetch_unfulfilled_orders_with_progress()
+                if orders:
+                    processed_data = process_orders(orders)
+                    st.session_state.processed_data = processed_data
+                    
+                    # Split data into groups
+                    df_group1, df_group2, df_group3 = split_data_by_group(processed_data)
+                    
+                    # Display results
+                    st.success("Analysis completed!")
+                    
+                    # Show statistics
+                    st.subheader("Statistics")
+                    for group_name, df in [("Group 1", df_group1), ("Group 2", df_group2), ("Group 3", df_group3)]:
+                        if not df.empty:
+                            count = len(df)
+                            total = df['Total Value'].sum()
+                            st.metric(f"{group_name}", f"{count} orders", f"€{total:.2f} total")
+                    
+                    # Add export button
+                    if st.button("Export to Excel"):
+                        save_excel_file("order_analysis.xlsx", df_group1, df_group2, df_group3)
+                        st.success("Data exported to Excel!")
             
             st.session_state.is_running = False
     
     with col2:
-        if st.session_state.start_time > 0:
+        if st.session_state.get('start_time', 0) > 0:
             elapsed_time = time.time() - st.session_state.start_time
             st.info(f"Elapsed Time: {elapsed_time:.2f} seconds")
 
