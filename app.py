@@ -26,6 +26,10 @@ storefront_token = os.getenv('SHOPIFY_STOREFRONT_TOKEN')
 flores_location_id = os.getenv('LOCATION_ID_FLORES')
 warehouse_location_id = os.getenv('LOCATION_ID_WAREHOUSE')
 
+# Validate required environment variables
+if not store_name or not access_token:
+    raise ValueError("SHOPIFY_STORE_NAME and SHOPIFY_ACCESS_TOKEN must be set")
+
 location_ids = {
     "Pr. das Flores, 54": flores_location_id,
     "Warehouse": warehouse_location_id
@@ -103,27 +107,34 @@ def fetch_inventory_levels(inventory_item_id: str) -> Dict[str, int]:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def execute_graphql_query(query: str, variables: Optional[Dict] = None) -> Dict[str, Any]:
-    headers = {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": access_token
-    }
-    
-    response = requests.post(base_url, json={"query": query, "variables": variables}, headers=headers)
-    response.raise_for_status()
-    
-    result = response.json()
-    
-    if 'errors' in result:
-        error_message = '; '.join([error.get('message', 'Unknown error') for error in result['errors']])
-        logging.error(f"GraphQL query returned errors: {error_message}")
-        raise Exception(f"GraphQL errors: {error_message}")
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": access_token
+        }
         
-    if 'data' not in result:
-        logging.error("GraphQL response missing 'data' field")
-        logging.error(f"Full response: {result}")
-        raise Exception("Invalid GraphQL response: missing 'data' field")
+        response = requests.post(base_url, json={"query": query, "variables": variables}, headers=headers)
+        response.raise_for_status()
         
-    return result
+        result = response.json()
+        
+        if 'errors' in result:
+            error_message = '; '.join([error.get('message', 'Unknown error') for error in result['errors']])
+            logging.error(f"GraphQL query returned errors: {error_message}")
+            raise Exception(f"GraphQL errors: {error_message}")
+            
+        if 'data' not in result:
+            logging.error("GraphQL response missing 'data' field")
+            logging.error(f"Full response: {result}")
+            raise Exception("Invalid GraphQL response: missing 'data' field")
+            
+        return result
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Request failed: {str(e)}")
+        raise Exception(f"Failed to connect to Shopify API: {str(e)}")
+    except Exception as e:
+        logging.error(f"Unexpected error: {str(e)}")
+        raise
 
 orders_query = """
 query($cursor: String) {
