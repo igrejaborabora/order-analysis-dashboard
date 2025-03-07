@@ -1,3 +1,35 @@
+import os
+import logging
+import requests
+import pandas as pd
+import time
+import traceback
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional, Tuple
+from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('orders_analysis.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
+
+# Shopify API Configuration
+flores_location_id = os.getenv('LOCATION_ID_FLORES')
+warehouse_location_id = os.getenv('LOCATION_ID_WAREHOUSE')
+
+if not flores_location_id or not warehouse_location_id:
+    raise ValueError("Location IDs must be set in environment variables")
+
 def check_stock_status(stock: int, required_quantity: int) -> str:
     """
     Determine the stock status based on available stock and required quantity.
