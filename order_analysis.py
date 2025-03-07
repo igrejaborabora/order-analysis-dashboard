@@ -1,3 +1,21 @@
+def check_stock_status(stock: int, required_quantity: int) -> str:
+    """
+    Determine the stock status based on available stock and required quantity.
+    
+    Args:
+        stock (int): Total available stock across all locations
+        required_quantity (int): Quantity needed for the order
+        
+    Returns:
+        str: Stock status - "OK", "NOT ENOUGH", or "OUT OF STOCK"
+    """
+    if stock == 0:
+        return "OUT OF STOCK"
+    elif stock < required_quantity:
+        return "NOT ENOUGH"
+    else:
+        return "OK"
+
 def fetch_unfulfilled_orders() -> List[Dict]:
     all_orders = []
     result = execute_graphql_query(count_query)
