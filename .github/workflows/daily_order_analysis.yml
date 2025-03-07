@@ -1,0 +1,45 @@
+name: Daily Order Analysis
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Runs at 6:00 AM UTC daily
+  workflow_dispatch:  # Allows manual trigger
+
+jobs:
+  analyze_orders:
+    runs-on: ubuntu-latest
+    
+    env:
+      SHOPIFY_STORE_NAME: ${{ secrets.SHOPIFY_STORE_NAME }}
+      SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+      SHOPIFY_STOREFRONT_TOKEN: ${{ secrets.SHOPIFY_STOREFRONT_TOKEN }}
+      LOCATION_ID_FLORES: ${{ secrets.LOCATION_ID_FLORES }}
+      LOCATION_ID_WAREHOUSE: ${{ secrets.LOCATION_ID_WAREHOUSE }}
+      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
+      SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Run order analysis
+        run: |
+          python Windsurf_Analise_Encomendas_Auto_Grouping_v26_Revised_Working_Deployment_GITHUB.py --output "orders_report_$(date +%Y%m%d).xlsx" --email
+          
+      - name: Upload report as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: orders-report
+          path: orders_report_*.xlsx
