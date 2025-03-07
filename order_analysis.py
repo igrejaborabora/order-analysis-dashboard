@@ -26,9 +26,99 @@ load_dotenv()
 # Shopify API Configuration
 flores_location_id = os.getenv('LOCATION_ID_FLORES')
 warehouse_location_id = os.getenv('LOCATION_ID_WAREHOUSE')
+SHOPIFY_ACCESS_TOKEN = os.getenv('SHOPIFY_ACCESS_TOKEN')
+SHOPIFY_STORE_URL = os.getenv('SHOPIFY_STORE_URL')
+SHOPIFY_API_VERSION = os.getenv('SHOPIFY_API_VERSION', '2024-01')
 
-if not flores_location_id or not warehouse_location_id:
-    raise ValueError("Location IDs must be set in environment variables")
+if not all([flores_location_id, warehouse_location_id, SHOPIFY_ACCESS_TOKEN, SHOPIFY_STORE_URL]):
+    raise ValueError("Required environment variables are missing. Check .env file.")
+
+# GraphQL endpoint
+SHOPIFY_GRAPHQL_URL = f"https://{SHOPIFY_STORE_URL}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
+
+# GraphQL Queries
+count_query = """
+query {
+  orders(first: 1, query: "fulfillment_status:unfulfilled AND status:open", sortKey: CREATED_AT, reverse: true) {
+    edges {
+      node {
+        id
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""
+
+orders_query = """
+query($cursor: String) {
+  orders(first: 50, after: $cursor, query: "fulfillment_status:unfulfilled AND status:open", sortKey: CREATED_AT, reverse: true) {
+    edges {
+      node {
+        id
+        name
+        createdAt
+        totalPriceSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+          presentmentMoney {
+            amount
+            currencyCode
+          }
+        }
+        totalShippingPriceSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+        }
+        shippingAddress {
+          country
+        }
+        lineItems(first: 50) {
+          edges {
+            node {
+              id
+              title
+              quantity
+              sku
+              originalUnitPriceSet {
+                presentmentMoney {
+                  amount
+                  currencyCode
+                }
+              }
+              variant {
+                id
+                price
+                compareAtPrice
+                weight
+                weightUnit
+                barcode
+                inventoryItem {
+                  id
+                }
+                product {
+                  vendor
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""
 
 def check_stock_status(stock: int, required_quantity: int) -> str:
     """
