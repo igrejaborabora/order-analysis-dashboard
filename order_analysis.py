@@ -205,3 +205,88 @@ def process_orders(orders: List[Dict]) -> List[Dict]:
                     item["Real Transport Cost"] = real_transport_cost
 
     return processed_data
+
+def split_data_by_group(processed_data: List[Dict]) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    df = pd.DataFrame(processed_data)
+    
+    if df.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
+    df['Stock Status'] = df['Stock Status'].astype(str)
+    
+    def determine_group(group_df):
+        # Count occurrences of each status
+        status_counts = group_df['Stock Status'].value_counts()
+        
+        # Group 1: All items are "OK"
+        if len(status_counts) == 1 and 'OK' in status_counts:
+            return pd.Series(1, index=group_df.index)
+        
+        # Group 3: Any item is "OUT OF STOCK"
+        if 'OUT OF STOCK' in status_counts:
+            return pd.Series(3, index=group_df.index)
+        
+        # Group 2: Mix of "OK" and "NOT ENOUGH" or all "NOT ENOUGH"
+        return pd.Series(2, index=group_df.index)
+    
+    groups = []
+    for _, group_df in df.groupby('Order Number'):
+        groups.append(determine_group(group_df))
+    df['group'] = pd.concat(groups)
+    
+    df = add_total_weight_and_real_cost(df)
+    
+    column_names = {
+        "Order Number": "Order Number",
+        "Order Date": "Order Date",
+        "Country": "Country",
+        "SKU": "SKU",
+        "EAN": "EAN",
+        "Product": "Product",
+        "Quantity": "Quantity",
+        "Vendor": "Vendor",
+        "Shopify Cost": "Shopify Cost",
+        "Base Price (€)": "Base Price (€)",
+        "Compare At Price (€)": "Compare At Price (€)",
+        "Item Local Price": "Item Local Price",
+        "Total Value": "Total Value",
+        "Total Local Value": "Total Local Value",
+        "XE": "XE",
+        "Price Diff": "Price Diff",
+        "Real Profit": "Real Profit",
+        "Margin %": "Margin %",
+        "Stock Status": "Stock Status",
+        "Stock Flores": "Stock Flores",
+        "Stock Warehouse": "Stock Warehouse",
+        "Total Weight": "Total Weight",
+        "Transport Cost": "Transport Cost",
+        "Real Transport Cost": "Real Transport Cost",
+        "group": "Group"
+    }
+    
+    df = df.rename(columns=column_names)
+    
+    # Removed Currency Code and Override Price from the final output
+    column_order = [
+        "Order Number", "Order Date", "Country", "SKU", "EAN", "Product",
+        "Quantity", "Vendor", "Shopify Cost", "Base Price (€)",
+        "Compare At Price (€)", "Item Local Price", "Total Value", "Total Local Value", "XE", "Price Diff",
+        "Real Profit", "Margin %", "Stock Status", "Stock Flores", "Stock Warehouse",
+        "Total Weight", "Transport Cost", "Real Transport Cost", "Group"
+    ]
+
+    missing_cols = [c for c in column_order if c not in df.columns]
+    for c in missing_cols:
+        df[c] = ""
+    
+    df = df[column_order]
+    
+    df_group1 = df[df['Group'] == 1].copy()
+    df_group2 = df[df['Group'] == 2].copy()
+    df_group3 = df[df['Group'] == 3].copy()
+    
+    df_group1 = convert_numeric_columns(df_group1)
+    df_group2 = convert_numeric_columns(df_group2)
+    df_group3 = convert_numeric_columns(df_group3)
+    
+    return df_group1, df_group2, df_group3
